@@ -15,7 +15,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::fmt::{Write, write};
 use std::mem;
 use std::ops::Bound;
@@ -34,12 +34,14 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
-use crate::key;
+use crate::iterators::StorageIterator;
+use crate::iterators::merge_iterator::{self, MergeIterator};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
 use crate::table::SsTable;
+use crate::{key, mem_table};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -431,6 +433,19 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        // read from memtable & immemtable
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+        let mut mem_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
+        mem_iters.push(Box::new(snapshot.memtable.scan(_lower, _upper)));
+
+        for imm_table in snapshot.imm_memtables.iter() {
+            mem_iters.push(Box::new(imm_table.scan(_lower, _upper)));
+        }
+        let memtalbe_iter = MergeIterator::create(mem_iters);
+
+        Ok(FusedIterator::new(LsmIterator::new(memtalbe_iter).unwrap()))
     }
 }
